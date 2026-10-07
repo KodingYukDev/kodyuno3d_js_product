@@ -1,0 +1,76 @@
+/* ============================================================
+   KodyUno — Module CSS
+   Scoped styles for the Arduino learning app
+   ============================================================ */
+
+/* Panel base */
+.uno-panel {
+  background-color: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(180, 83, 9, 0.08);
+}
+
+/* Button base */
+.uno-btn {
+  font-family: 'Nunito', 'Segoe UI', sans-serif;
+  font-weight: 700;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.uno-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.uno-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* LED glow animation */
+@keyframes led-glow {
+  0%, 100% { box-shadow: 0 0 4px currentColor; }
+  50%       { box-shadow: 0 0 16px currentColor, 0 0 30px currentColor; }
+}
+
+.led-on {
+  animation: led-glow 0.8s ease-in-out infinite;
+}
+
+/* Servo arm rotation */
+.servo-arm {
+  transform-origin: bottom center;
+  transition: transform 0.3s ease;
+}
+
+/* Serial monitor */
+.serial-monitor {
+  font-family: 'Courier New', 'Consolas', monospace;
+  font-size: 12px;
+  background: #0f172a;
+  color: #86efac;
+  border-radius: 6px;
+  padding: 8px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Blockly workspace — warm cream override */
+.uno-blockly-container {
+  background: #fffbeb;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #fde68a;
+}
+
+/* Pin pad indicator */
+.pin-pad {
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pin-pad-high {
+  box-shadow: 0 0 6px 2px rgba(251, 191, 36, 0.8);
+}
