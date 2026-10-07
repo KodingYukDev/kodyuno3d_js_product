@@ -5,10 +5,11 @@ import { getBoard } from '@kodyuno/lib/boards'
 import { SimulatorCanvas } from '@kodyuno/components/Simulator/SimulatorCanvas'
 import { Scene3D, type Scene3DHandle } from '../three/Scene3D'
 import { startBuzzerAudio } from '../three/buzzerAudio'
+import { BoardThumb } from '../three/BoardThumb'
 import { defaultQuality, isTouchDevice, saveQuality, type Quality } from '../three/quality'
 import { ComponentPalette } from '@kodyuno/components/Simulator/ComponentPalette'
 import { ComponentInspector } from '@kodyuno/components/Simulator/ComponentInspector'
-import { PlayIcon, StopIcon, ChipIcon } from '@kodyuno/components/icons/Icons'
+import { PlayIcon, StopIcon } from '@kodyuno/components/icons/Icons'
 import { BoardPicker } from '@kodyuno/components/ide/BoardPicker'
 import { LibraryManager } from '@kodyuno/components/ide/LibraryManager'
 import { SerialConsole } from '@kodyuno/components/ide/SerialConsole'
@@ -58,7 +59,8 @@ export default function KodyUnoIdePage() {
   const clearSerial = useKodyUnoStore((state) => state.clearSerial)
   const appendSerial = useKodyUnoStore((state) => state.appendSerial)
   const addComponent = useKodyUnoStore((state) => state.addComponent)
-  const components = useKodyUnoStore((state) => state.components)
+  // Only the count: subscribing to the array re-rendered the whole IDE on every part move.
+  const componentCount = useKodyUnoStore((state) => state.components.length)
 
   const [showBoards, setShowBoards] = useState(false)
   const [menu, setMenu] = useState<'more' | 'examples' | null>(null)
@@ -379,7 +381,7 @@ export default function KodyUnoIdePage() {
     setShowExamples(false)
     stop()
     for (const type of example.parts) {
-      if (components.some((item) => item.type === type)) continue
+      if (useKodyUnoStore.getState().components.some((item) => item.type === type)) continue
       const catalog = COMPONENT_CATALOG.find((item) => item.type === type)
       if (!catalog) continue
       addComponent({
@@ -500,7 +502,7 @@ export default function KodyUnoIdePage() {
           {preparing ? 'Menyiapkan…' : running ? 'Stop' : 'Jalankan'}
         </button>
         <button onClick={() => setShowBoards(true)} className="uno-btn flex h-11 items-center gap-1.5 rounded-xl border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-amber-50">
-          <ChipIcon size={15} /><span className="hidden sm:inline">{board.shortName}</span>
+          <BoardThumb id={boardType} className="h-7 w-10" /><span className="hidden sm:inline">{board.shortName}</span>
         </button>
         <div className="relative z-40">
           <button onClick={() => setMenu(menu === 'examples' ? null : 'examples')} aria-expanded={menu === 'examples'} className="uno-btn h-11 rounded-xl border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-amber-50">Contoh</button>
@@ -535,7 +537,7 @@ export default function KodyUnoIdePage() {
                 </label>
                 <button onClick={() => { setMenu(null); setShowLibraries(true) }} className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-slate-50">Library</button>
                 <button disabled={!redoCount || runState === 'running'} onClick={() => useKodyUnoStore.getState().redo()} className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-slate-50 disabled:opacity-40">Redo</button>
-                {components.length > 0 && <button onClick={() => { setMenu(null); clearCanvas() }} className="w-full rounded-xl px-3 py-2.5 text-left text-rose-600 hover:bg-rose-50">Kosongkan meja</button>}
+                {componentCount > 0 && <button onClick={() => { setMenu(null); clearCanvas() }} className="w-full rounded-xl px-3 py-2.5 text-left text-rose-600 hover:bg-rose-50">Kosongkan meja</button>}
 
                 <div className="my-2 h-px bg-slate-100" />
                 <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Tampilan</p>
@@ -599,7 +601,7 @@ export default function KodyUnoIdePage() {
             Seret = geser · klik kanan seret = putar · scroll = zoom · klik pin/lubang/kaki = kabel · R putar · Delete hapus
           </p>}
           <ComponentInspector />
-          {components.length === 0 && !showParts && (
+          {componentCount === 0 && !showParts && (
             <button onClick={() => setShowParts(true)} className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full bg-amber-400 px-5 py-2.5 text-sm font-bold text-slate-900 shadow-lg">+ Tambah komponen</button>
           )}
         </div>

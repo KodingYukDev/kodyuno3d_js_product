@@ -45,7 +45,7 @@ export interface WireObject {
 export function createWire(id: string, color: string, points: Vector3[], curved: boolean): WireObject {
   const group = new Group()
   const curve = new CatmullRomCurve3(points, false, curved ? 'catmullrom' : 'centripetal', 0.5)
-  const segments = Math.max(24, Math.round(curve.getLength() * 1.5))
+  const segments = Math.max(20, Math.min(160, Math.round(curve.getLength())))
   const material = new MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.05, emissive: '#000000' })
   const tube = new Mesh(new TubeGeometry(curve, segments, RADIUS, 12, false), material)
   tube.castShadow = true
@@ -65,9 +65,8 @@ export function createWire(id: string, color: string, points: Vector3[], curved:
   }
   const base = new Color(color)
   let selected = false
-  const halo = new Mesh(new TubeGeometry(curve, segments, RADIUS * 2, 8, false), new MeshStandardMaterial({ color: '#38bdf8', transparent: true, opacity: 0.35, depthWrite: false }))
-  halo.visible = false
-  group.add(halo)
+  // built on first selection: most wires are never selected
+  let halo: Mesh | null = null
   return {
     group, material,
     setHot(hot, time) {
@@ -79,7 +78,11 @@ export function createWire(id: string, color: string, points: Vector3[], curved:
     setSelected(value) {
       if (value === selected) return
       selected = value
-      halo.visible = value
+      if (value && !halo) {
+        halo = new Mesh(new TubeGeometry(curve, segments, RADIUS * 2, 8, false), new MeshStandardMaterial({ color: '#38bdf8', transparent: true, opacity: 0.35, depthWrite: false }))
+        group.add(halo)
+      }
+      if (halo) halo.visible = value
     },
     dispose() {
       group.traverse(object => {

@@ -222,6 +222,8 @@ export function Scene3D({ quality, onReady }: Props) {
     renderer.toneMappingExposure = 0.95
     renderer.shadowMap.enabled = true
     renderer.shadowMap.type = PCFShadowMap
+    // shadows are re-rendered only on frames that need them (see loop)
+    renderer.shadowMap.autoUpdate = false
     renderer.domElement.className = 'block h-full w-full touch-none'
     setMaxAnisotropy(renderer.capabilities.getMaxAnisotropy())
     host.append(renderer.domElement)
@@ -281,7 +283,12 @@ export function Scene3D({ quality, onReady }: Props) {
     world.add(breadboard)
     let board: BoardObject | null = null
     let boardType = ''
-    const parts = new Map<string, { object: PartObject; comp: BoardComponent; base: number }>()
+    interface PartEntry { object: PartObject; comp: BoardComponent; base: number; lookKey: string }
+    const parts = new Map<string, PartEntry>()
+    /** Last store snapshot the scene was synced to (identity checks skip unchanged work). */
+    let seen: Partial<ReturnType<typeof useKodyUnoStore.getState>> = {}
+    /** Part being dragged: drawn here, written to the store once on release. */
+    let ghost: { id: string; pos: { x: number; y: number } } | null = null
     const wireObjects = new Map<string, { object: WireObject; key: string }>()
     const selection = new Box3Helper(new Box3(), new Color('#f59e0b'))
     selection.visible = false
@@ -308,32 +315,60 @@ export function Scene3D({ quality, onReady }: Props) {
         boardType = state.boardType
       }
       board!.group.position.set(mm(state.boardOffset.x), 0, mm(state.boardOffset.y))
-      const powered = state.runState === 'running' || state.runState === 'paused'
-      board!.setLeds(boardLedOn(def, state.pins, powered), state.runState === 'running')
+      if (state.pins !== seen.pins || state.runState !== seen.runState || state.boardType !== seen.boardType) {
+        const powered = state.runState === 'running' || state.runState === 'paused'
+        board!.setLeds(boardLedOn(def, state.pins, powered), state.runState === 'running')
+      }
       breadboard.position.set(mm(state.breadboardOffset.x), 0, mm(state.breadboardOffset.y))
     }
 
+    /** Where a part is drawn: the drag ghost wins over the store while dragging. */
+    const posOf = (comp: BoardComponent) => (ghost?.id === comp.id ? ghost.pos : comp.pos)
+
+    const placePart = (entry: PartEntry, comp: BoardComponent) => {
+      const spec = PART_SPECS[comp.type]
+      const pos = posOf(comp) ?? { x: 0, y: 0 }
+      entry.base = baseHeight({ ...comp, pos })
+      entry.object.group.position.set(mm(pos.x + spec.w / 2), entry.base, mm(pos.y + spec.h / 2))
+      entry.object.group.rotation.y = -((comp.rot ?? 0) * Math.PI) / 180
+    }
+
+    const frameSelection = () => {
+      const id = useKodyUnoStore.getState().selectedComponentId
+      const selected = id ? parts.get(id) : undefined
+      if (selected) {
+        selection.box.setFromObject(selected.object.group).expandByScalar(1.2)
+        selection.visible = true
+      } else selection.visible = false
+    }
+
+    let looks: Record<string, Record<string, unknown>> = {}
+    let meters: Record<string, number | null> = {}
     const syncParts = () => {
       const state = useKodyUnoStore.getState()
-      const looks = ledAppearance(state.components, state.circuitIndex.netOf, state.pins)
-      const meters = state.components.some(c => c.type === 'multimeter') ? multimeterReadings(state.components, state.circuitIndex.netOf, state.pins) : {}
+      const circuitChanged = state.components !== seen.components || state.pins !== seen.pins || state.circuitIndex !== seen.circuitIndex
+      if (circuitChanged) {
+        looks = ledAppearance(state.components, state.circuitIndex.netOf, state.pins)
+        meters = state.components.some(c => c.type === 'multimeter') ? multimeterReadings(state.components, state.circuitIndex.netOf, state.pins) : {}
+      }
+      const offsetsChanged = state.boardOffset !== seen.boardOffset || state.breadboardOffset !== seen.breadboardOffset || state.boardType !== seen.boardType
       const alive = new Set<string>()
       for (const comp of state.components) {
         alive.add(comp.id)
         let entry = parts.get(comp.id)
         if (!entry) {
-          entry = { object: createPart(comp), comp, base: -1 }
+          entry = { object: createPart(comp), comp, base: -1, lookKey: '' }
           parts.set(comp.id, entry)
           world.add(entry.object.group)
+          placePart(entry, comp)
+        } else if (entry.comp.pos !== comp.pos || entry.comp.rot !== comp.rot || offsetsChanged) placePart(entry, comp)
+        const led = looks[comp.id]
+        const lookKey = comp.type === 'multimeter' ? String(meters[comp.id]) : led ? JSON.stringify(led) : ''
+        if (entry.comp.state !== comp.state || entry.lookKey !== lookKey || entry.base < 0) {
+          const look = comp.type === 'multimeter' ? { ...comp.state, reading: meters[comp.id] } : led ? { ...comp.state, ...led } : comp.state
+          entry.object.update(look)
+          entry.lookKey = lookKey
         }
-        const spec = PART_SPECS[comp.type]
-        const pos = comp.pos ?? { x: 0, y: 0 }
-        const base = baseHeight(comp)
-        entry.base = base
-        entry.object.group.position.set(mm(pos.x + spec.w / 2), base, mm(pos.y + spec.h / 2))
-        entry.object.group.rotation.y = -((comp.rot ?? 0) * Math.PI) / 180
-        const look = comp.type === 'multimeter' ? { ...comp.state, reading: meters[comp.id] } : looks[comp.id] ? { ...comp.state, ...looks[comp.id] } : comp.state
-        entry.object.update(look)
         entry.comp = comp
       }
       for (const [id, entry] of parts) {
@@ -342,11 +377,7 @@ export function Scene3D({ quality, onReady }: Props) {
         entry.object.dispose()
         parts.delete(id)
       }
-      const selected = state.selectedComponentId ? parts.get(state.selectedComponentId) : undefined
-      if (selected) {
-        selection.box.setFromObject(selected.object.group).expandByScalar(1.2)
-        selection.visible = true
-      } else selection.visible = false
+      frameSelection()
     }
 
     const endpoint = (ref: NodeRef): WireEnd | null => {
@@ -360,12 +391,13 @@ export function Scene3D({ quality, onReady }: Props) {
       }
       const entry = parts.get(ref.comp)
       const comp = entry?.comp
-      if (!entry || !comp?.pos) return null
+      const pos = comp && posOf(comp)
+      if (!entry || !comp || !pos) return null
       const spec = PART_SPECS[comp.type]
       const t = spec.terminals.find(term => term.role === ref.role)
       if (!t) return null
       const off = rotatedTerminal(spec, t, comp.rot)
-      return { x: comp.pos.x + off.dx, y: comp.pos.y + off.dy, h: entry.base + entry.object.terminalHeight(ref.role) }
+      return { x: pos.x + off.dx, y: pos.y + off.dy, h: entry.base + entry.object.terminalHeight(ref.role) }
     }
 
     const hotRoots = () => {
@@ -403,20 +435,41 @@ export function Scene3D({ quality, onReady }: Props) {
         entry.object.dispose()
         wireObjects.delete(id)
       }
+      if (state.pins === seen.pins && state.circuitIndex === seen.circuitIndex && state.wires === seen.wires) {
+        for (const [id, entry] of wireObjects) entry.object.setSelected(id === selectedWireRef.current)
+        return
+      }
       const roots = hotRoots()
       hot = new Set(state.wires.filter(w => { const k = nodeKey(w.a); return k ? roots.has(state.circuitIndex.netOf[k] ?? k) : false }).map(w => w.id))
       for (const [id, entry] of wireObjects) entry.object.setSelected(id === selectedWireRef.current)
     }
 
     const syncAll = () => {
+      const state = useKodyUnoStore.getState()
       syncBoard()
       syncParts()
       syncWires()
-      nodes = buildNodes(useKodyUnoStore.getState().components)
+      if (state.components !== seen.components || state.boardOffset !== seen.boardOffset || state.breadboardOffset !== seen.breadboardOffset || state.boardType !== seen.boardType) {
+        nodes = buildNodes(state.components)
+      }
+      seen = state
+      dirty = true
+    }
+
+    /** Drag frame: move only the dragged part and the wires on it. */
+    const syncGhost = () => {
+      if (!ghost) return
+      const entry = parts.get(ghost.id)
+      if (!entry) return
+      placePart(entry, entry.comp)
+      frameSelection()
+      syncWires()
       dirty = true
     }
 
     let pendingSync = true
+    let ghostMoved = false
+    let pendingOffset: { kind: 'board' | 'breadboard'; at: { x: number; y: number } } | null = null
     const unsubscribe = useKodyUnoStore.subscribe(() => { pendingSync = true })
 
     // ---------------------------------------------------------- camera framing
@@ -479,6 +532,8 @@ export function Scene3D({ quality, onReady }: Props) {
       raycaster.setFromCamera(pointer, camera)
       return raycaster.ray.intersectPlane(new Plane(new Vector3(0, 1, 0), -height), new Vector3())
     }
+
+    if (import.meta.env.DEV) Object.assign((window as unknown as { __kodyuno3d: object }).__kodyuno3d, { pickAt: (x: number, y: number) => cast({ clientX: x, clientY: y } as MouseEvent)?.object.userData.pick })
 
     /** Node a hit refers to: only holes/terminals on the surface that was hit. */
     let touchScale = 1
@@ -631,15 +686,16 @@ export function Scene3D({ quality, onReady }: Props) {
 
     const onPointerMove = (event: PointerEvent) => {
       const store = useKodyUnoStore.getState()
+      if (event.pointerType === 'touch' && !drag && !wiring) return
       if (drag?.kind === 'part' || drag?.kind === 'board' || drag?.kind === 'breadboard') {
         const point = castPlane(event, drag.height)
         if (!point) return
         const p = toCanvas(point)
         if (drag.kind === 'part') {
           drag.moved = true
-          store.moveComponent(drag.id, { x: p.x - drag.off.x, y: p.y - drag.off.y })
-        } else if (drag.kind === 'board') store.moveBoard({ x: p.x - drag.off.x, y: p.y - drag.off.y })
-        else store.moveBreadboard({ x: p.x - drag.off.x, y: p.y - drag.off.y })
+          ghost = { id: drag.id, pos: { x: p.x - drag.off.x, y: p.y - drag.off.y } }
+          ghostMoved = true
+        } else pendingOffset = { kind: drag.kind, at: { x: p.x - drag.off.x, y: p.y - drag.off.y } }
         return
       }
       if (drag?.kind === 'knob') {
@@ -668,14 +724,28 @@ export function Scene3D({ quality, onReady }: Props) {
       renderer.domElement.style.cursor = node ? 'crosshair' : hit && (hit.object.userData.pick as { kind: string }).kind !== 'table' ? 'grab' : 'default'
     }
 
+    const flushOffset = () => {
+      if (!pendingOffset) return
+      const store = useKodyUnoStore.getState()
+      if (pendingOffset.kind === 'board') store.moveBoard(pendingOffset.at)
+      else store.moveBreadboard(pendingOffset.at)
+      pendingOffset = null
+    }
+
     const onPointerUp = (event: PointerEvent) => {
       const store = useKodyUnoStore.getState()
       if (drag?.kind === 'part') {
-        const comp = store.components.find(c => c.id === (drag as { id: string }).id)
+        if (ghost) store.moveComponent(ghost.id, ghost.pos)
+        ghost = null
+        ghostMoved = false
+        const comp = useKodyUnoStore.getState().components.find(c => c.id === (drag as { id: string }).id)
         const snapped = comp && snapTarget(comp)
         if (comp && snapped) store.moveComponent(comp.id, snapped)
         store.resolveCircuit()
-      } else if (drag?.kind === 'board' || drag?.kind === 'breadboard') store.resolveCircuit()
+      } else if (drag?.kind === 'board' || drag?.kind === 'breadboard') {
+        flushOffset()
+        store.resolveCircuit()
+      }
       else if (drag?.kind === 'press') store.updateComponentState(drag.id, { pressed: false })
       else if (wiring && down && Math.hypot(event.clientX - down.x, event.clientY - down.y) > 6) {
         // drag-and-release wiring, as in the 2D canvas
@@ -757,6 +827,8 @@ export function Scene3D({ quality, onReady }: Props) {
     const loop = (time: number) => {
       raf = requestAnimationFrame(loop)
       if (applied !== qualityRef.current) applyQuality(qualityRef.current)
+      if (ghostMoved) { ghostMoved = false; syncGhost() }
+      flushOffset()
       // Running sketches change state thousands of times a second; a few
       // dozen scene syncs per second is all the eye can see.
       if (pendingSync && time - lastSync > settings.syncInterval) {
@@ -777,6 +849,8 @@ export function Scene3D({ quality, onReady }: Props) {
       glowing = live
       if (!dirty) return
       dirty = false
+      // On the light tier a drag skips shadow passes; they catch up on release.
+      renderer.shadowMap.needsUpdate = settings.postprocess || !(drag && (drag.kind === 'part' || drag.kind === 'board' || drag.kind === 'breadboard'))
       if (settings.postprocess) composer.render()
       else renderer.render(scene, camera)
     }

@@ -1,3 +1,4 @@
+import { BoardThumb } from '../../../three/BoardThumb'
 import { useState } from 'react'
 import { useKodyUnoStore } from '@kodyuno/store/useKodyUnoStore'
 import { BOARD_LIST, getBoard } from '@kodyuno/lib/boards'
@@ -73,6 +74,9 @@ export function BoardPicker({ onClose }: { onClose: () => void }) {
                           : 'border-slate-200 bg-white hover:border-amber-300 hover:bg-amber-50/40'
                       }`}
                     >
+                      <div className="flex gap-3">
+                      <BoardThumb id={board.id} className="h-16 w-24 shrink-0 drop-shadow" />
+                      <div className="min-w-0 flex-1">
                       <div className="flex items-start justify-between gap-2">
                         <span className="text-sm font-bold text-slate-800">{board.name}</span>
                         <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold ${FAMILY_ACCENT[board.family]}`}>
@@ -88,6 +92,8 @@ export function BoardPicker({ onClose }: { onClose: () => void }) {
                         {board.hasWiFi && <span className="text-indigo-500">WiFi</span>}
                         {board.hasBLE && <span className="text-indigo-500">BLE</span>}
                       </dl>
+                      </div>
+                      </div>
                     </button>
                   )
                 })}
