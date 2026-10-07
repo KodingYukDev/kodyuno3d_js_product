@@ -47,6 +47,8 @@ function loadSvg(markup: string): Promise<HTMLImageElement> {
 
 async function paint(markup: string, width: number, height: number, scale: number): Promise<HTMLCanvasElement> {
   const image = await loadSvg(markup)
+  // WebGL textures stop at 4096 px on most GPUs
+  scale = Math.min(scale, 4096 / width, 4096 / height)
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(2, Math.round(width * scale))
   canvas.height = Math.max(2, Math.round(height * scale))

@@ -5,9 +5,10 @@ import { getBoard } from '@kodyuno/lib/boards'
 import { SimulatorCanvas } from '@kodyuno/components/Simulator/SimulatorCanvas'
 import { Scene3D, type Scene3DHandle } from '../three/Scene3D'
 import { startBuzzerAudio } from '../three/buzzerAudio'
+import { defaultQuality, isTouchDevice, saveQuality, type Quality } from '../three/quality'
 import { ComponentPalette } from '@kodyuno/components/Simulator/ComponentPalette'
 import { ComponentInspector } from '@kodyuno/components/Simulator/ComponentInspector'
-import { PlayIcon, StopIcon, ChipIcon, TrashIcon } from '@kodyuno/components/icons/Icons'
+import { PlayIcon, StopIcon, ChipIcon } from '@kodyuno/components/icons/Icons'
 import { BoardPicker } from '@kodyuno/components/ide/BoardPicker'
 import { LibraryManager } from '@kodyuno/components/ide/LibraryManager'
 import { SerialConsole } from '@kodyuno/components/ide/SerialConsole'
@@ -23,9 +24,7 @@ import { createHardwareSession } from '@kodyuno/lib/hardwareSession'
 import { startAvrFirmware } from '@kodyuno/lib/firmware/browserRun'
 import { LIBRARIES_FILE, MAIN_FILE, checkFileName, compileFiles, missingLibraries } from '@kodyuno/lib/sketchFiles'
 import { CompilerTimeoutError, CompilerUnavailableError, compileSketch, type CompiledArtifact } from '@kodyuno/lib/compilerClient'
-import { exportWokwiDiagram, importWokwiDiagram } from '@kodyuno/lib/wokwiDiagram'
 import { decodeShare, encodeShare, SHARE_PARAM, shareCodeFromHash } from '@kodyuno/lib/projectShare'
-import { boardBox } from '@kodyuno/lib/boardGeometry'
 
 const SPEEDS = [
   { value: 1, label: '1×' },
@@ -62,16 +61,20 @@ export default function KodyUnoIdePage() {
   const components = useKodyUnoStore((state) => state.components)
 
   const [showBoards, setShowBoards] = useState(false)
+  const [menu, setMenu] = useState<'more' | 'examples' | null>(null)
   const [view, setView] = useState<'3d' | '2d'>(() => (localStorage.getItem('kodyuno3d-view') === '2d' ? '2d' : '3d'))
-  const [bloom, setBloom] = useState(true)
+  const [quality, setQuality] = useState<Quality>(defaultQuality)
+  const [touch] = useState(isTouchDevice)
+  const [showParts, setShowParts] = useState(false)
+  useEffect(() => saveQuality(quality), [quality])
   const [muted, setMuted] = useState(false)
   const mutedRef = useRef(muted)
   const sceneRef = useRef<Scene3DHandle | null>(null)
   useEffect(() => { try { localStorage.setItem('kodyuno3d-view', view) } catch { /* storage unavailable */ } }, [view])
   useEffect(() => { mutedRef.current = muted }, [muted])
   useEffect(() => startBuzzerAudio(() => mutedRef.current), [])
-  const [showCode, setShowCode] = useState(true)
-  const [mobilePanel, setMobilePanel] = useState<'canvas' | 'code' | 'parts'>('canvas')
+  // Code docks beside the bench on wide screens; tablets start with the bench alone.
+  const [showCode, setShowCode] = useState(() => window.innerWidth >= 1280)
   const [showSerial, setShowSerial] = useState(true)
   const [saveError, setSaveError] = useState<string | null>(null)
   const undoCount = useKodyUnoStore(state => state.undoStack.length)
@@ -452,59 +455,6 @@ export default function KodyUnoIdePage() {
     }
   }
 
-  // Wokwi diagram.json: the circuit moves between simulators; the sketch
-  // travels separately (sketch.ino), exactly as on wokwi.com.
-  const exportWokwi = () => {
-    const state = useKodyUnoStore.getState()
-    if (state.boardType !== 'uno') { setErrorMessage('Ekspor Wokwi saat ini untuk Arduino Uno.'); return }
-    const box = boardBox()
-    const { diagram, warnings } = exportWokwiDiagram({ components: state.components, wires: state.wires, boardOrigin: { x: box.x, y: box.y } })
-    const url = URL.createObjectURL(new Blob([JSON.stringify(diagram, null, 2)], { type: 'application/json' }))
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = 'diagram.json'
-    anchor.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
-    for (const warning of warnings) appendSerial(`[Wokwi] ${warning}\n`)
-  }
-
-  const importWokwi = async (file?: File) => {
-    if (!file) return
-    const request = ++fileGeneration.current
-    try {
-      if (file.size > 2_000_000) throw new Error('diagram.json melebihi batas 2 MB.')
-      const parsed: unknown = JSON.parse(await file.text())
-      if (!mountedRef.current || fileGeneration.current !== request) return
-      stop()
-      const store = useKodyUnoStore.getState()
-      store.setBoardType('uno')
-      store.checkpoint()
-      let box = boardBox()
-      const imported = importWokwiDiagram(parsed, { x: box.x, y: box.y })
-      const { wires, warnings } = imported
-      let { components } = imported
-      // Wokwi layouts often put parts above the board; move the board (and
-      // everything relative to it) down so the whole circuit is in view.
-      const top = Math.min(box.y, ...components.map(c => c.pos?.y ?? box.y))
-      if (top < 20) {
-        const shift = 20 - top
-        store.moveBoard({ x: store.boardOffset.x, y: store.boardOffset.y + shift })
-        // Parts plugged into breadboard holes must stay in them.
-        store.moveBreadboard({ x: store.breadboardOffset.x, y: store.breadboardOffset.y + shift })
-        box = boardBox()
-        components = components.map(c => (c.pos ? { ...c, pos: { x: c.pos.x, y: c.pos.y + shift } } : c))
-      }
-      useKodyUnoStore.setState({ components, wires, selectedComponentId: null, errorMessage: null })
-      store.resetPins()
-      store.clearSerial()
-      store.resolveCircuit()
-      appendSerial(`[Wokwi] ${components.length} komponen dan ${wires.length} kabel diimpor. Salin kode sketch.ino dari Wokwi ke editor.\n`)
-      for (const warning of warnings) appendSerial(`[Wokwi] ${warning}\n`)
-    } catch (error) {
-      if (mountedRef.current && fileGeneration.current === request) setErrorMessage(error instanceof SyntaxError ? 'File bukan JSON yang valid.' : error instanceof Error ? error.message : String(error))
-    }
-  }
-
   const shareProject = async () => {
     try {
       const state = useKodyUnoStore.getState()
@@ -524,291 +474,221 @@ export default function KodyUnoIdePage() {
 
   const running = runState === 'running' || preparing
 
+  const clearCanvas = () => {
+    stop()
+    useKodyUnoStore.getState().checkpoint()
+    useKodyUnoStore.setState({ components: [], wires: [], selectedComponentId: null })
+    useKodyUnoStore.getState().resolveCircuit()
+  }
+
   return (
-    <div className="flex h-full flex-col bg-slate-100">
-      {/* ---------- toolbar ---------- */}
-      <header className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-3 py-2">
-        <a href="https://kodingyuk.id" className="mr-2 flex items-center gap-2" title="KodingYuk">
-          <span className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 text-sm font-black text-white shadow">3D</span>
-          <span className="leading-tight"><span className="block text-sm font-extrabold text-slate-800">KodyUno 3D</span><span className="block text-[10px] text-slate-500">Simulator Arduino · KodingYuk</span></span>
+    <div className="flex h-full flex-col bg-slate-900">
+      {/* ---------- top bar: run, board, examples; everything else in ⋯ ---------- */}
+      <header className="relative z-30 flex items-center gap-2 border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
+        {menu && <div className="fixed inset-0 z-30" onClick={() => setMenu(null)} />}
+        <a href="https://kodingyuk.id" className="flex shrink-0 items-center gap-2" title="KodingYuk">
+          <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-sm font-black text-white shadow">3D</span>
+          <span className="hidden leading-tight md:block"><span className="block text-sm font-extrabold text-slate-800">KodyUno 3D</span><span className="block text-[10px] text-slate-500">Simulator Arduino</span></span>
         </a>
-        <button disabled={compiling || runState === 'running' || !['uno', 'mega', 'esp8266'].includes(boardType)} onClick={() => void compile()} className="uno-btn rounded-lg border border-slate-300 px-3 py-1.5 text-xs disabled:opacity-30">{compiling ? 'Compile…' : 'Compile server'}</button>
-        {compiling && <button onClick={() => compileRequest.current?.abort()} className="uno-btn text-xs">Batalkan compile</button>}
-        {compiledArtifact && <button className="uno-btn text-xs" onClick={() => {
-          const url = URL.createObjectURL(new Blob([compiledArtifact.bytes], { type: 'application/octet-stream' }))
-          const anchor = document.createElement('a'); anchor.href = url; anchor.download = compiledArtifact.filename; anchor.click()
-          setTimeout(() => URL.revokeObjectURL(url), 1000)
-        }}>Unduh {compiledArtifact.target === 'uno' ? 'HEX' : 'BIN'}</button>}
-        {compileLogs && <details className="w-full text-xs"><summary>Hasil compile server</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{compileLogs}</pre></details>}
-        <button disabled={!undoCount || runState === 'running'} onClick={() => useKodyUnoStore.getState().undo()} className="uno-btn rounded-lg border border-slate-200 px-3 py-1.5 text-xs disabled:opacity-30">Undo</button>
-        <button disabled={!redoCount || runState === 'running'} onClick={() => useKodyUnoStore.getState().redo()} className="uno-btn rounded-lg border border-slate-200 px-3 py-1.5 text-xs disabled:opacity-30">Redo</button>
-        <button onClick={() => setShowCode(value => !value)} aria-pressed={showCode} className="uno-btn rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold">{showCode ? 'Tutup kode' : 'Kode'}</button>
+
         <button
           onClick={start}
           disabled={!running && backend === 'avr' && (boardType !== 'uno' || !firmware)}
-          className={`uno-btn flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-white ${
-            running ? 'bg-rose-500 hover:bg-rose-600' : 'bg-emerald-600 hover:bg-emerald-700'
-          }`}
+          className={`uno-btn ml-1 flex h-11 items-center gap-2 rounded-xl px-5 text-sm font-bold text-white shadow ${running ? 'bg-rose-500 hover:bg-rose-600' : 'bg-emerald-600 hover:bg-emerald-700'}`}
         >
-          {running ? <StopIcon size={13} /> : <PlayIcon size={13} />}
-          {preparing ? 'Compile… (batal)' : running ? 'Hentikan' : 'Jalankan'}
+          {running ? <StopIcon size={15} /> : <PlayIcon size={15} />}
+          {preparing ? 'Menyiapkan…' : running ? 'Stop' : 'Jalankan'}
         </button>
-
-        <button
-          onClick={() => setShowBoards(true)}
-          className="uno-btn flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-amber-400 hover:bg-amber-50"
-        >
-          <ChipIcon size={13} />
-          {board.shortName}
+        <button onClick={() => setShowBoards(true)} className="uno-btn flex h-11 items-center gap-1.5 rounded-xl border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-amber-50">
+          <ChipIcon size={15} /><span className="hidden sm:inline">{board.shortName}</span>
         </button>
-
-        <select aria-label="Mesin eksekusi" value={backend} onChange={event => { fileGeneration.current++; stop(); setBackend(event.target.value as 'auto' | 'sketch' | 'avr'); setErrorMessage(null) }} className="rounded border px-2 py-1 text-xs">
-          <option value="auto">{isAvrBoard ? 'Firmware asli (Uno/Nano/Mega)' : 'Otomatis'}</option>
-          <option value="sketch">Interpreter C++ (offline, tanpa server)</option>
-          <option value="avr">Firmware AVR · unggah HEX</option>
-        </select>
-        {backend === 'avr' && <label className="rounded border px-2 py-1 text-xs">
-          Unggah HEX Uno
-          <input aria-label="Unggah HEX Uno" type="file" accept=".hex" disabled={boardType !== 'uno'} onChange={event => { void openFirmware(event.target.files?.[0]); event.target.value = '' }} />
-        </label>}
-
-        <button
-          onClick={() => setShowLibraries(true)}
-          className="uno-btn rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-amber-400 hover:bg-amber-50"
-        >
-          Library
-        </button>
-
-        <div className="relative">
-          <button
-            onClick={() => setShowExamples((value) => !value)}
-            className="uno-btn rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-amber-400 hover:bg-amber-50"
-          >
-            Contoh
-          </button>
-          {showExamples && (
-            <div className="absolute left-0 top-full z-40 mt-1 max-h-80 w-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+        <div className="relative z-40">
+          <button onClick={() => setMenu(menu === 'examples' ? null : 'examples')} aria-expanded={menu === 'examples'} className="uno-btn h-11 rounded-xl border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-amber-50">Contoh</button>
+          {menu === 'examples' && (
+            <div className="absolute left-0 top-full mt-1 max-h-[70vh] w-72 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl">
               {examples.map((example) => (
-                <button
-                  key={example.id}
-                  onClick={() => loadExample(example)}
-                  className="uno-btn w-full rounded-lg px-2.5 py-2 text-left hover:bg-amber-50"
-                >
-                  <p className="text-xs font-semibold text-slate-800">{example.title}</p>
-                  <p className="text-[10px] leading-snug text-slate-500">{example.description}</p>
+                <button key={example.id} onClick={() => { loadExample(example); setMenu(null) }} className="uno-btn w-full rounded-xl px-3 py-2.5 text-left hover:bg-amber-50">
+                  <p className="text-sm font-semibold text-slate-800">{example.title}</p>
+                  <p className="text-[11px] leading-snug text-slate-500">{example.description}</p>
                 </button>
               ))}
             </div>
           )}
         </div>
 
-        <label className="uno-btn cursor-pointer rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-amber-400 hover:bg-amber-50">
-          Buka .ino
-          <input ref={fileInput} type="file" accept=".ino,.txt,.cpp" className="hidden" onChange={(event) => void openFile(event.target.files)} />
-        </label>
+        <div className="ml-auto flex items-center gap-1.5">
+          <button title="Undo" aria-label="Undo" disabled={!undoCount || runState === 'running'} onClick={() => useKodyUnoStore.getState().undo()} className="uno-btn grid h-11 w-11 place-items-center rounded-xl text-lg text-slate-600 hover:bg-slate-100 disabled:opacity-30">↶</button>
+          <button onClick={() => setShowParts(value => !value)} aria-pressed={showParts} className={`uno-btn h-11 rounded-xl px-3 text-xs font-semibold ${showParts ? 'bg-amber-400 text-slate-900' : 'border border-slate-300 text-slate-700'}`}>Komponen</button>
+          <button onClick={() => setShowCode(value => !value)} aria-pressed={showCode} className={`uno-btn h-11 rounded-xl px-3 text-xs font-semibold ${showCode ? 'bg-slate-800 text-white' : 'border border-slate-300 text-slate-700'}`}>Kode</button>
+          <div className="relative z-40">
+            <button onClick={() => setMenu(menu === 'more' ? null : 'more')} aria-expanded={menu === 'more'} aria-label="Menu lainnya" className="uno-btn grid h-11 w-11 place-items-center rounded-xl border border-slate-300 text-lg text-slate-700 hover:bg-slate-50">⋯</button>
+            {menu === 'more' && (
+              <div className="absolute right-0 top-full mt-1 max-h-[80vh] w-72 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 text-sm shadow-xl">
+                <button onClick={() => { setMenu(null); void shareProject() }} className="w-full rounded-xl px-3 py-2.5 text-left font-semibold text-emerald-700 hover:bg-emerald-50">Bagikan link proyek</button>
+                <button onClick={() => { setMenu(null); saveProject() }} className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-slate-50">Simpan proyek</button>
+                <label className="block w-full cursor-pointer rounded-xl px-3 py-2.5 hover:bg-slate-50">Buka proyek
+                  <input type="file" accept=".json" className="hidden" onChange={e => { setMenu(null); void openProject(e.target.files?.[0]); e.target.value = '' }} />
+                </label>
+                <button onClick={() => { setMenu(null); download() }} className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-slate-50">Unduh sketch (.ino)</button>
+                <label className="block w-full cursor-pointer rounded-xl px-3 py-2.5 hover:bg-slate-50">Buka sketch (.ino)
+                  <input ref={fileInput} type="file" accept=".ino,.txt,.cpp" className="hidden" onChange={(event) => { setMenu(null); void openFile(event.target.files) }} />
+                </label>
+                <button onClick={() => { setMenu(null); setShowLibraries(true) }} className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-slate-50">Library</button>
+                <button disabled={!redoCount || runState === 'running'} onClick={() => useKodyUnoStore.getState().redo()} className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-slate-50 disabled:opacity-40">Redo</button>
+                {components.length > 0 && <button onClick={() => { setMenu(null); clearCanvas() }} className="w-full rounded-xl px-3 py-2.5 text-left text-rose-600 hover:bg-rose-50">Kosongkan meja</button>}
 
-        <button
-          onClick={download}
-          className="uno-btn rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-amber-400 hover:bg-amber-50"
-        >
-          Simpan .ino
-        </button>
+                <div className="my-2 h-px bg-slate-100" />
+                <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Tampilan</p>
+                <div className="grid grid-cols-2 gap-1.5 px-1">
+                  {(['3d', '2d'] as const).map(mode => (
+                    <button key={mode} aria-pressed={view === mode} onClick={() => setView(mode)} className={`rounded-xl py-2 font-semibold ${view === mode ? 'bg-amber-400 text-slate-900' : 'bg-slate-100 text-slate-600'}`}>{mode.toUpperCase()}</button>
+                  ))}
+                  {(['hemat', 'hd'] as const).map(level => (
+                    <button key={level} aria-pressed={quality === level} onClick={() => setQuality(level)} className={`rounded-xl py-2 font-semibold ${quality === level ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600'}`}>{level === 'hd' ? 'Grafis HD' : 'Grafis ringan'}</button>
+                  ))}
+                </div>
+                <button onClick={() => setMuted(value => !value)} className="mt-1.5 w-full rounded-xl px-3 py-2.5 text-left hover:bg-slate-50">Suara buzzer: {muted ? 'mati' : 'nyala'}</button>
 
-        <button onClick={saveProject} className="uno-btn rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold">Simpan project</button>
-        <label className="uno-btn cursor-pointer rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold">
-          Buka project
-          <input type="file" accept=".json" className="hidden" onChange={e => { void openProject(e.target.files?.[0]); e.target.value = '' }} />
-        </label>
-        <label className="uno-btn cursor-pointer rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold" title="Impor rangkaian dari diagram.json Wokwi">
-          Impor Wokwi
-          <input aria-label="Impor diagram.json Wokwi" type="file" accept=".json" className="hidden" onChange={e => { void importWokwi(e.target.files?.[0]); e.target.value = '' }} />
-        </label>
-        <button onClick={() => void shareProject()} className="uno-btn rounded-lg border border-emerald-400 px-2.5 py-1.5 text-xs font-semibold text-emerald-700" title="Salin link berisi rangkaian dan kode">Bagikan</button>
-        <button onClick={exportWokwi} disabled={runState === 'running'} className="uno-btn rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold disabled:opacity-30" title="Unduh rangkaian sebagai diagram.json Wokwi">Ekspor Wokwi</button>
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-[10px] text-slate-400">Kecepatan</span>
-          <div className="flex overflow-hidden rounded-lg border border-slate-300">
-            {SPEEDS.map((option) => (
-              <button
-                key={option.value}
-                disabled={backend === 'avr'}
-                onClick={() => {
-                  setSpeed(option.value)
-                  if (runRef.current) runRef.current.interpreter.speed = option.value
-                }}
-                className={`px-2 py-1 text-[11px] font-semibold ${
-                  speed === option.value ? 'bg-amber-100 text-amber-800' : 'text-slate-500 hover:bg-slate-50'
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
+                <div className="my-2 h-px bg-slate-100" />
+                <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Simulasi</p>
+                <div className="space-y-2 px-1">
+                  <select aria-label="Mesin eksekusi" value={backend} onChange={event => { fileGeneration.current++; stop(); setBackend(event.target.value as 'auto' | 'sketch' | 'avr'); setErrorMessage(null) }} className="w-full rounded-xl border border-slate-300 px-2 py-2 text-xs">
+                    <option value="auto">{isAvrBoard ? 'Firmware asli (otomatis)' : 'Otomatis'}</option>
+                    <option value="sketch">Interpreter C++ (offline)</option>
+                  </select>
+                  <div className="flex overflow-hidden rounded-xl border border-slate-300 text-xs">
+                    {SPEEDS.map((option) => (
+                      <button key={option.value} onClick={() => { setSpeed(option.value); if (runRef.current) runRef.current.interpreter.speed = option.value }}
+                        className={`flex-1 py-2 font-semibold ${speed === option.value ? 'bg-amber-100 text-amber-800' : 'text-slate-500'}`}>{option.label}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </header>
       {saveError && <div role="alert" className="bg-amber-50 px-3 py-2 text-xs text-amber-800">{saveError}</div>}
-      <div className="border-b border-slate-200 bg-slate-50 px-3 py-1 text-[10px] text-slate-500">
-        {backend === 'avr'
-          ? `Mesin: AVR8js 0.21.1 · Uno ATmega328P 16 MHz · ${firmware?.name ?? 'Belum ada HEX'} · Kompilasi eksternal arduino:avr:uno; kode editor tidak dijalankan. UART RX, ADC A0–A5, INT0 rising dan backend PWM D9 terverifikasi; GPIO digital; input rangkaian disampel tiap 256 siklus. Kontroler SPI master MSB-first mode 0 dan I2C/TWI master terverifikasi; model perangkat terbatas, kompatibilitas library belum menyeluruh. Kecepatan simulasi tidak dijamin real-time. HEX disimpan dalam project dan autosave. Hanya Uno; firmware ESP tidak didukung.`
-          : backend === 'auto' && (boardType === 'uno' || boardType === 'nano' || boardType === 'mega')
-            ? `Mesin: firmware asli · sketch di-compile di server (${boardType === 'mega' ? 'arduino:avr:mega, ATmega2560' : 'arduino:avr:uno, ATmega328P'}, di-cache) lalu dijalankan AVR8js di browser dengan timer, ADC, EEPROM, SPI, I2C dan interrupt chip asli. Kalau server compile tidak terjangkau, otomatis pakai interpreter C++ di browser.`
-            : 'Mesin: interpreter C++ edukasi · Emulasi firmware ESP8266 dan jaringan Wi-Fi nyata belum tersedia.'}
-      </div>
+      {errorMessage && <div role="alert" className="border-b border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{errorMessage}</div>}
 
-      {errorMessage && (
-        <div className="border-b border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] text-rose-700">
-          {errorMessage}
-        </div>
-      )}
-
-      <nav aria-label="Panel workspace" className="flex shrink-0 border-b border-slate-200 bg-white lg:hidden">
-        {(['canvas', 'code', 'parts'] as const).map(panel => <button key={panel} aria-pressed={mobilePanel === panel}
-          onClick={() => { setMobilePanel(panel); if (panel === 'code') setShowCode(true) }}
-          className={`flex-1 px-4 py-3 text-xs font-semibold ${mobilePanel === panel ? 'border-b-2 border-blue-600 text-blue-700' : 'text-slate-500'}`}>
-          {panel === 'canvas' ? 'Rangkaian' : panel === 'code' ? 'Kode & serial' : 'Komponen'}
-        </button>)}
-      </nav>
-      {/* Canvas first, auxiliary panels on the right. Small screens show one useful panel. */}
-      <div className={`grid min-h-0 flex-1 grid-cols-1 ${showCode ? 'lg:grid-cols-[minmax(0,1.6fr)_minmax(280px,0.8fr)_240px]' : 'lg:grid-cols-[minmax(0,1fr)_240px]'}`}>
-        {/* editor + serial */}
-        <div className={`${mobilePanel === 'code' ? 'flex' : 'hidden'} ${showCode ? 'lg:flex' : 'lg:hidden'} order-2 min-h-0 flex-col border-l border-slate-200`}>
-          <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3">
-            <div role="tablist" aria-label="Berkas sketch" className="flex min-w-0 items-center gap-1 overflow-x-auto">
-              {[MAIN_FILE, ...Object.keys(extraFiles)].map(name => (
-                <span key={name} className={`flex shrink-0 items-center rounded text-xs font-semibold ${activeFile === name ? 'bg-slate-100 text-slate-800' : 'text-slate-500 hover:bg-slate-50'}`}>
-                  <button role="tab" aria-selected={activeFile === name} onClick={() => setActiveFile(name)} className="px-2 py-1">{name}</button>
-                  {name !== MAIN_FILE && <button aria-label={`Hapus ${name}`} onClick={() => { removeExtraFile(name); if (activeFile === name) setActiveFile(MAIN_FILE) }} className="pr-1.5 text-slate-400 hover:text-rose-600">×</button>}
-                </span>
-              ))}
-              {addingFile === null
-                ? <button aria-label="Tambah berkas" title="Tambah berkas (.h .cpp libraries.txt)" onClick={() => { setAddingFile(''); setFileNameError(null) }} className="shrink-0 rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-100">+</button>
-                : <input autoFocus value={addingFile} placeholder="nama.h / libraries.txt" aria-label="Nama berkas baru" title={fileNameError ?? undefined}
-                    onChange={event => { setAddingFile(event.target.value); setFileNameError(null) }}
-                    onKeyDown={event => {
-                      if (event.key === 'Escape') { setAddingFile(null); return }
-                      if (event.key !== 'Enter') return
-                      const name = addingFile.trim()
-                      const check = checkFileName(name, Object.keys(extraFiles))
-                      if (!check.ok) { setFileNameError(check.reason); return }
-                      setExtraFile(name, name === LIBRARIES_FILE ? '# satu library per baris, mis.\n# Servo\n' : '')
-                      setActiveFile(name); setAddingFile(null)
-                    }}
-                    onBlur={() => { if (!addingFile.trim()) setAddingFile(null) }}
-                    className={`w-40 rounded border px-1.5 py-0.5 text-xs ${fileNameError ? 'border-rose-400' : 'border-slate-300'}`} />}
-              {fileNameError && <span role="alert" className="shrink-0 text-[10px] text-rose-600">{fileNameError}</span>}
+      <div className="relative flex min-h-0 flex-1">
+        {/* ---------- workbench fills the screen ---------- */}
+        <div className="relative min-h-0 min-w-0 flex-1">
+          {view === '3d' ? <Scene3D quality={quality} onReady={handle => { sceneRef.current = handle }} /> : <SimulatorCanvas />}
+          {view === '3d' && (
+            <div aria-label="Kontrol kamera" className="absolute bottom-3 left-3 z-20 flex flex-col gap-1.5">
+              <div className="grid grid-cols-3 gap-1 rounded-2xl bg-slate-900/80 p-1.5 text-base font-bold text-slate-100 shadow-lg backdrop-blur">
+                {([
+                  ['＋', 'Perbesar', () => sceneRef.current?.zoom(0.8)],
+                  ['▲', 'Geser ke depan', () => sceneRef.current?.pan(0, 1)],
+                  ['－', 'Perkecil', () => sceneRef.current?.zoom(1.25)],
+                  ['◀', 'Geser kiri', () => sceneRef.current?.pan(-1, 0)],
+                  ['⌂', 'Kembali ke awal', () => sceneRef.current?.resetView()],
+                  ['▶', 'Geser kanan', () => sceneRef.current?.pan(1, 0)],
+                  ['⟲', 'Putar kiri', () => sceneRef.current?.turn(0.3)],
+                  ['▼', 'Geser ke belakang', () => sceneRef.current?.pan(0, -1)],
+                  ['⟳', 'Putar kanan', () => sceneRef.current?.turn(-0.3)],
+                ] as const).map(([icon, label, action]) => (
+                  <button key={label} title={label} aria-label={label} onClick={action} className="grid h-10 w-10 place-items-center rounded-xl hover:bg-slate-700 active:bg-slate-600">{icon}</button>
+                ))}
+              </div>
+              <button onClick={() => sceneRef.current?.topView()} className="rounded-xl bg-slate-900/80 py-2 text-xs font-semibold text-slate-100 shadow-lg backdrop-blur">Lihat dari atas</button>
             </div>
-            <button aria-expanded={showSerial} onClick={() => setShowSerial(value => !value)} className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-100">Serial {showSerial ? '−' : '+'}</button>
-          </div>
-          <div className="min-h-0 flex-1">
-            <Editor
-              height="100%"
-              path={activeFile}
-              language={activeFile === LIBRARIES_FILE ? 'plaintext' : 'cpp'}
-              theme="vs-dark"
-              value={activeFile === MAIN_FILE ? sketchCode : extraFiles[activeFile] ?? ''}
-              onChange={(value) => activeFile === MAIN_FILE ? setSketchCode(value ?? '') : setExtraFile(activeFile, value ?? '')}
-              options={{
-                fontSize: 13,
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                wordWrap: 'on',
-                tabSize: 2,
-                padding: { top: 10 },
-                automaticLayout: true,
-              }}
-            />
-          </div>
-          <div className={`${showSerial ? '' : 'hidden'} h-48 shrink-0 border-t border-slate-800`}>
-            <SerialConsole />
-          </div>
-        </div>
-
-        {/* canvas */}
-        <div className={`${mobilePanel === 'canvas' ? 'block' : 'hidden'} lg:block order-1 relative min-h-0 bg-slate-50`}>
-          {view === '3d' ? <Scene3D bloom={bloom} onReady={handle => { sceneRef.current = handle }} /> : <SimulatorCanvas />}
-          <div className="absolute right-3 top-3 z-20 flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-900/85 p-1 text-[11px] font-semibold text-slate-200 shadow-lg backdrop-blur">
-            {(['3d', '2d'] as const).map(mode => (
-              <button key={mode} aria-pressed={view === mode} onClick={() => setView(mode)}
-                className={`rounded-lg px-2.5 py-1 ${view === mode ? 'bg-amber-400 text-slate-900' : 'hover:bg-slate-800'}`}>{mode.toUpperCase()}</button>
-            ))}
-            {view === '3d' && <>
-              <span className="mx-1 h-4 w-px bg-slate-600" />
-              <button onClick={() => sceneRef.current?.resetView()} className="rounded-lg px-2 py-1 hover:bg-slate-800" title="Pandangan miring">Miring</button>
-              <button onClick={() => sceneRef.current?.topView()} className="rounded-lg px-2 py-1 hover:bg-slate-800" title="Pandangan dari atas">Atas</button>
-              <button aria-pressed={bloom} onClick={() => setBloom(value => !value)} className={`rounded-lg px-2 py-1 ${bloom ? 'text-amber-300' : 'text-slate-400'} hover:bg-slate-800`} title="Efek cahaya LED">Cahaya</button>
-              <button aria-pressed={!muted} onClick={() => setMuted(value => !value)} className={`rounded-lg px-2 py-1 ${muted ? 'text-slate-400' : 'text-amber-300'} hover:bg-slate-800`} title="Suara buzzer">{muted ? 'Suara mati' : 'Suara'}</button>
-            </>}
-          </div>
-          {view === '3d' && <p className="pointer-events-none absolute bottom-3 right-3 z-10 hidden rounded-full bg-slate-900/70 px-3 py-1 text-[10px] text-slate-300 lg:block">
-            Seret meja = putar · klik kanan seret = geser · scroll = zoom · klik pin/lubang/kaki = kabel · R putar · Delete hapus
+          )}
+          {view === '3d' && !touch && <p className="pointer-events-none absolute bottom-3 right-3 z-10 rounded-full bg-slate-900/70 px-3 py-1 text-[10px] text-slate-300">
+            Seret = geser · klik kanan seret = putar · scroll = zoom · klik pin/lubang/kaki = kabel · R putar · Delete hapus
           </p>}
+          <ComponentInspector />
+          {components.length === 0 && !showParts && (
+            <button onClick={() => setShowParts(true)} className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full bg-amber-400 px-5 py-2.5 text-sm font-bold text-slate-900 shadow-lg">+ Tambah komponen</button>
+          )}
         </div>
 
-        {/* parts + inspector */}
-        <aside className={`${mobilePanel === 'parts' ? 'flex' : 'hidden'} lg:flex order-3 min-h-0 flex-col border-l border-slate-200 bg-white`}>
-          <div className="flex border-b border-slate-100">
-            {(['parts', 'pins'] as const).map((value) => (
-              <button
-                key={value}
-                onClick={() => setRightTab(value)}
-                className={`flex-1 px-2 py-2 text-[11px] font-semibold ${
-                  rightTab === value ? 'border-b-2 border-amber-400 text-amber-700' : 'text-slate-500 hover:bg-slate-50'
-                }`}
-              >
-                {value === 'parts' ? 'Komponen' : 'Pinout'}
-              </button>
-            ))}
-          </div>
-
-          {rightTab === 'parts' ? (
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <ComponentPalette />
+        {/* ---------- parts drawer (over the workbench, left) ---------- */}
+        {showParts && (
+          <aside className="absolute inset-y-0 left-0 z-30 flex w-[min(320px,85vw)] flex-col border-r border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center border-b border-slate-100">
+              {(['parts', 'pins'] as const).map((value) => (
+                <button key={value} onClick={() => setRightTab(value)} className={`flex-1 py-3 text-xs font-semibold ${rightTab === value ? 'border-b-2 border-amber-400 text-amber-700' : 'text-slate-500'}`}>
+                  {value === 'parts' ? 'Komponen' : 'Pinout'}
+                </button>
+              ))}
+              <button aria-label="Tutup komponen" onClick={() => setShowParts(false)} className="grid h-11 w-11 place-items-center text-lg text-slate-500 hover:bg-slate-100">×</button>
             </div>
-          ) : (
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{board.mcu}</p>
-              <table className="mt-2 w-full text-[10px]">
-                <tbody>
-                  {board.pins.filter((pin) => pin.connectable).map((pin) => (
-                    <tr key={String(pin.id)} className="border-b border-slate-50">
-                      <td className="py-0.5 font-mono font-semibold text-slate-700">{pin.label}</td>
-                      <td className="py-0.5 text-slate-400">
-                        {[
-                          pin.kind === 'gnd' ? 'GND' : null,
-                          pin.kind === 'power' ? `${pin.volts ?? board.logicVolts}V` : null,
-                          pin.adc ?? null,
-                          pin.pwm ? 'PWM' : null,
-                          pin.dac ? 'DAC' : null,
-                          pin.touch ? 'Touch' : null,
-                          pin.inputOnly ? 'input-only' : null,
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+            {rightTab === 'parts' ? (
+              <div className="min-h-0 flex-1 overflow-hidden" onClick={event => { if (touch && (event.target as HTMLElement).closest('button')) setShowParts(false) }}>
+                <ComponentPalette />
+              </div>
+            ) : (
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{board.mcu}</p>
+                <table className="mt-2 w-full text-xs">
+                  <tbody>
+                    {board.pins.filter((pin) => pin.connectable).map((pin) => (
+                      <tr key={String(pin.id)} className="border-b border-slate-50">
+                        <td className="py-1 font-mono font-semibold text-slate-700">{pin.label}</td>
+                        <td className="py-1 text-slate-400">
+                          {[pin.kind === 'gnd' ? 'GND' : null, pin.kind === 'power' ? `${pin.volts ?? board.logicVolts}V` : null, pin.adc ?? null, pin.pwm ? 'PWM' : null, pin.dac ? 'DAC' : null, pin.touch ? 'Touch' : null, pin.inputOnly ? 'input-only' : null].filter(Boolean).join(' · ')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </aside>
+        )}
 
-          {components.length > 0 && (
-            <button
-              onClick={() => {
-                stop()
-                useKodyUnoStore.getState().checkpoint()
-                useKodyUnoStore.setState({ components: [], wires: [], selectedComponentId: null })
-                useKodyUnoStore.getState().resolveCircuit()
-              }}
-              className="uno-btn m-2 flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 py-1.5 text-[11px] font-semibold text-slate-500 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600"
-            >
-              <TrashIcon size={12} /> Kosongkan kanvas
-            </button>
-          )}
-        </aside>
+        {/* ---------- code drawer: docked on wide screens, over the bench on tablets ---------- */}
+        {showCode && (
+          <section className="absolute inset-y-0 right-0 z-30 flex w-full flex-col border-l border-slate-700 bg-slate-950 shadow-2xl sm:w-[min(520px,70vw)] xl:static xl:z-auto xl:w-[480px] xl:shadow-none">
+            <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-slate-800 bg-slate-900 px-2">
+              <div role="tablist" aria-label="Berkas sketch" className="flex min-w-0 items-center gap-1 overflow-x-auto">
+                {[MAIN_FILE, ...Object.keys(extraFiles)].map(name => (
+                  <span key={name} className={`flex shrink-0 items-center rounded-lg text-xs font-semibold ${activeFile === name ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>
+                    <button role="tab" aria-selected={activeFile === name} onClick={() => setActiveFile(name)} className="px-2.5 py-1.5">{name}</button>
+                    {name !== MAIN_FILE && <button aria-label={`Hapus ${name}`} onClick={() => { removeExtraFile(name); if (activeFile === name) setActiveFile(MAIN_FILE) }} className="pr-2 text-slate-400 hover:text-rose-400">×</button>}
+                  </span>
+                ))}
+                {addingFile === null
+                  ? <button aria-label="Tambah berkas" title="Tambah berkas (.h .cpp libraries.txt)" onClick={() => { setAddingFile(''); setFileNameError(null) }} className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:bg-slate-800">+</button>
+                  : <input autoFocus value={addingFile} placeholder="nama.h" aria-label="Nama berkas baru" title={fileNameError ?? undefined}
+                      onChange={event => { setAddingFile(event.target.value); setFileNameError(null) }}
+                      onKeyDown={event => {
+                        if (event.key === 'Escape') { setAddingFile(null); return }
+                        if (event.key !== 'Enter') return
+                        const name = addingFile.trim()
+                        const check = checkFileName(name, Object.keys(extraFiles))
+                        if (!check.ok) { setFileNameError(check.reason); return }
+                        setExtraFile(name, name === LIBRARIES_FILE ? '# satu library per baris, mis.\n# Servo\n' : '')
+                        setActiveFile(name); setAddingFile(null)
+                      }}
+                      onBlur={() => { if (!addingFile.trim()) setAddingFile(null) }}
+                      className={`w-32 rounded border bg-slate-800 px-1.5 py-1 text-xs text-white ${fileNameError ? 'border-rose-400' : 'border-slate-600'}`} />}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <button aria-expanded={showSerial} onClick={() => setShowSerial(value => !value)} className="rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-800">Serial {showSerial ? '▾' : '▸'}</button>
+                <button aria-label="Tutup kode" onClick={() => setShowCode(false)} className="grid h-9 w-9 place-items-center rounded-lg text-lg text-slate-400 hover:bg-slate-800 xl:hidden">×</button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1">
+              <Editor
+                height="100%"
+                path={activeFile}
+                language={activeFile === LIBRARIES_FILE ? 'plaintext' : 'cpp'}
+                theme="vs-dark"
+                value={activeFile === MAIN_FILE ? sketchCode : extraFiles[activeFile] ?? ''}
+                onChange={(value) => activeFile === MAIN_FILE ? setSketchCode(value ?? '') : setExtraFile(activeFile, value ?? '')}
+                options={{ fontSize: touch ? 15 : 13, minimap: { enabled: false }, scrollBeyondLastLine: false, wordWrap: 'on', tabSize: 2, padding: { top: 10 }, automaticLayout: true, lineNumbersMinChars: 3 }}
+              />
+            </div>
+            <div className={`${showSerial ? '' : 'hidden'} h-[38%] min-h-40 shrink-0 border-t border-slate-800`}>
+              <SerialConsole />
+            </div>
+          </section>
+        )}
       </div>
 
-      <ComponentInspector />
 
       {showBoards && <BoardPicker onClose={() => setShowBoards(false)} />}
       {showLibraries && (

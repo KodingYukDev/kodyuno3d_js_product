@@ -1,4 +1,4 @@
-import { CatmullRomCurve3, Color, Group, Mesh, MeshStandardMaterial, SphereGeometry, TubeGeometry, Vector3, CylinderGeometry } from 'three'
+import { BoxGeometry, CatmullRomCurve3, Color, Group, Mesh, MeshStandardMaterial, SphereGeometry, TubeGeometry, Vector3 } from 'three'
 import { wireRoute, type WireStyle } from '@kodyuno/lib/wireGeometry'
 import { mm } from './units'
 
@@ -20,16 +20,19 @@ export interface WirePick { kind: 'wire'; id: string }
 export function wirePath(a: WireEnd, b: WireEnd, bends: { x: number; y: number }[] = [], style: WireStyle = 'orthogonal'): Vector3[] {
   const route = wireRoute(a, b, bends, style)
   const span = Math.hypot(mm(b.x - a.x), mm(b.y - a.y))
-  const lift = Math.max(a.h, b.h) + Math.min(14, 4 + span * 0.12)
-  const points: Vector3[] = [new Vector3(mm(a.x), a.h, mm(a.y)), new Vector3(mm(a.x), a.h + 2.5, mm(a.y))]
+  const lift = Math.max(a.h, b.h) + HOUSING + Math.min(14, 4 + span * 0.12)
+  // the cable leaves the top of the dupont housing, which sits on the hole
+  const points: Vector3[] = [new Vector3(mm(a.x), a.h + HOUSING, mm(a.y)), new Vector3(mm(a.x), a.h + HOUSING + 3, mm(a.y))]
   const inner = route.slice(1, -1)
   if (inner.length === 0) points.push(new Vector3(mm((a.x + b.x) / 2), lift, mm((a.y + b.y) / 2)))
   for (const p of inner) points.push(new Vector3(mm(p.x), lift, mm(p.y)))
-  points.push(new Vector3(mm(b.x), b.h + 2.5, mm(b.y)), new Vector3(mm(b.x), b.h, mm(b.y)))
+  points.push(new Vector3(mm(b.x), b.h + HOUSING + 3, mm(b.y)), new Vector3(mm(b.x), b.h + HOUSING, mm(b.y)))
   return points
 }
 
 const RADIUS = 0.62
+/** Dupont housing height (mm). */
+export const HOUSING = 7
 
 export interface WireObject {
   group: Group
@@ -44,17 +47,21 @@ export function createWire(id: string, color: string, points: Vector3[], curved:
   const curve = new CatmullRomCurve3(points, false, curved ? 'catmullrom' : 'centripetal', 0.5)
   const segments = Math.max(24, Math.round(curve.getLength() * 1.5))
   const material = new MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.05, emissive: '#000000' })
-  const tube = new Mesh(new TubeGeometry(curve, segments, RADIUS, 10, false), material)
+  const tube = new Mesh(new TubeGeometry(curve, segments, RADIUS, 12, false), material)
   tube.castShadow = true
   tube.userData.pick = { kind: 'wire', id } satisfies WirePick
   group.add(tube)
-  // Dupont housings at both ends
-  const housing = new MeshStandardMaterial({ color: '#111114', roughness: 0.6 })
-  for (const [tip, above] of [[points[0], points[1]], [points[points.length - 1], points[points.length - 2]]]) {
-    const plug = new Mesh(new CylinderGeometry(1.05, 1.05, 3.2, 12), housing)
-    plug.position.copy(tip).lerp(above, 0.6)
-    plug.userData.pick = { kind: 'wire', id } satisfies WirePick
-    group.add(plug)
+  // Dupont housings at both ends: black square shell on top of the hole,
+  // a short metal pin going into it
+  const housing = new MeshStandardMaterial({ color: '#141417', roughness: 0.55 })
+  const pinMetal = new MeshStandardMaterial({ color: '#d6d9df', metalness: 0.9, roughness: 0.25 })
+  for (const top of [points[0], points[points.length - 1]]) {
+    const plug = new Mesh(new BoxGeometry(2.5, HOUSING, 2.5), housing)
+    plug.position.set(top.x, top.y - HOUSING / 2, top.z)
+    plug.castShadow = true
+    const pin = new Mesh(new BoxGeometry(0.64, 2.2, 0.64), pinMetal)
+    pin.position.set(top.x, top.y - HOUSING - 0.9, top.z)
+    for (const mesh of [plug, pin]) { mesh.userData.pick = { kind: 'wire', id } satisfies WirePick; group.add(mesh) }
   }
   const base = new Color(color)
   let selected = false

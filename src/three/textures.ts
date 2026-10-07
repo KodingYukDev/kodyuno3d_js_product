@@ -9,6 +9,7 @@ import { GenericBoard } from '@kodyuno/components/Simulator/GenericBoard'
 import { LolinBoard } from '@kodyuno/components/Simulator/LolinBoard'
 import { rgb565 } from '@kodyuno/lib/displayColor'
 import { propsKey, rasterizeElement, rasterizeMarkup } from './rasterize'
+import { textureScaleFor } from './quality'
 
 type State = Record<string, unknown>
 const num = (value: unknown, fallback = 0) => (typeof value === 'number' ? value : fallback)
@@ -57,14 +58,13 @@ export interface Artwork {
   draw(): Promise<HTMLCanvasElement>
 }
 
-const SCALE = 4
 
 function elementArtwork(type: ElementPartType, state: State): Artwork {
   const geometry = ELEMENT_GEOMETRY[ELEMENT_PART_SOURCE[type].geometry]
   const props = ELEMENT_PROPS[type]?.(state) ?? {}
   return {
     key: `${geometry.tag}|${propsKey(props)}`,
-    draw: () => rasterizeElement(geometry.tag, props, geometry.cssW, geometry.cssH, SCALE),
+    draw: () => rasterizeElement(geometry.tag, props, geometry.cssW, geometry.cssH, textureScaleFor()),
   }
 }
 
@@ -76,7 +76,7 @@ function markupArtwork(type: ComponentType, state: State, id: string): Artwork |
   const markup = renderToStaticMarkup(createElement('svg', {
     xmlns: 'http://www.w3.org/2000/svg', width: w, height: h, viewBox: `0 0 ${w} ${h}`,
   }, render(state, `p${id.replace(/[^a-z0-9]/gi, '')}`)))
-  return { key: markup, draw: () => rasterizeMarkup(markup, markup, w, h, SCALE * 1.4) }
+  return { key: markup, draw: () => rasterizeMarkup(markup, markup, w, h, textureScaleFor()) }
 }
 
 function screenCanvas(width: number, height: number) {
@@ -183,7 +183,7 @@ export function boardArtwork(board: BoardDef, ledOn: boolean, powerOn: boolean):
   if (art.kind === 'element') {
     const leds = board.family === 'esp32' ? { led1: ledOn, ledPower: powerOn } : { led13: ledOn, ledPower: powerOn, ledTX: powerOn, ledRX: false }
     const props = { ...leds, ...art.props }
-    return { key: `${art.tag}|${propsKey(props)}`, draw: () => rasterizeElement(art.tag, props, art.cssW, art.cssH, 4) }
+    return { key: `${art.tag}|${propsKey(props)}`, draw: () => rasterizeElement(art.tag, props, art.cssW, art.cssH, textureScaleFor()) }
   }
   const body = board.id === 'esp8266'
     ? createElement(LolinBoard, { board, ledOn })
@@ -191,5 +191,5 @@ export function boardArtwork(board: BoardDef, ledOn: boolean, powerOn: boolean):
   const markup = renderToStaticMarkup(createElement('svg', {
     xmlns: 'http://www.w3.org/2000/svg', width: art.cssW, height: art.cssH, viewBox: `0 0 ${art.cssW} ${art.cssH}`,
   }, body))
-  return { key: markup, draw: () => rasterizeMarkup(markup, markup, art.cssW, art.cssH, 4) }
+  return { key: markup, draw: () => rasterizeMarkup(markup, markup, art.cssW, art.cssH, textureScaleFor()) }
 }

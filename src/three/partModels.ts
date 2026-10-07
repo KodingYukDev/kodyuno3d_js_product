@@ -5,6 +5,7 @@ import {
 } from 'three'
 import type { BoardComponent, ComponentType } from '@kodyuno/types'
 import { PART_SPECS, resistorBands, type PartSpec, type TerminalSpec } from '@kodyuno/lib/partSpecs'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { partArtwork } from './textures'
 import { canvasTexture, disposeGroup } from './boardModels'
 import { mm } from './units'
@@ -315,7 +316,7 @@ function texturedPart(type: ComponentType, spec: PartSpec, pick: PartPick, id: s
   const w = mm(spec.w), d = mm(spec.h)
   const top = new MeshStandardMaterial({ color: '#ffffff', roughness: 0.55, transparent: true, alphaTest: 0.04 })
   const side = plastic(shape.side, 0.7)
-  const block = new Mesh(new BoxGeometry(w, shape.thickness, d), [side, side, top, side, side, side])
+  const block = new Mesh(new RoundedBoxGeometry(w, shape.thickness, d, 2, Math.min(0.6, shape.thickness / 2 - 0.05)), [side, side, top, side, side, side])
   block.position.y = shape.standoff + shape.thickness / 2
   block.castShadow = true
   block.receiveShadow = true
@@ -358,7 +359,8 @@ function texturedPart(type: ComponentType, spec: PartSpec, pick: PartPick, id: s
   return {
     group,
     height: blockTop + (shape.pins ? 3.6 : 0),
-    terminalHeight: () => (shape.pins ? blockTop + 3.4 : blockTop),
+    // jumpers seat on the plastic collar and cover the pin, like a real dupont
+    terminalHeight: () => (shape.pins ? blockTop + 2.5 : blockTop),
     update(state) { paint(state); animate?.(state) },
     dispose: () => disposeGroup(group),
   }

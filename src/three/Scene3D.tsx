@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  ACESFilmicToneMapping, AmbientLight, Box3, Box3Helper, CanvasTexture, Color, DirectionalLight, Group, HemisphereLight,
+  ACESFilmicToneMapping, AmbientLight, MOUSE, TOUCH, Box3, Box3Helper, CanvasTexture, Color, DirectionalLight, Group, HemisphereLight,
   Mesh, MeshStandardMaterial, PCFShadowMap, PerspectiveCamera, Plane, PlaneGeometry, PMREMGenerator, Raycaster,
   RepeatWrapping, Scene, SRGBColorSpace, Vector2, Vector3, WebGLRenderer, type Intersection, type Object3D,
 } from 'three'
@@ -10,6 +10,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js'
 import { useKodyUnoStore } from '@kodyuno/store/useKodyUnoStore'
 import { getBoard } from '@kodyuno/lib/boards'
 import { boardBox, connectableHoles, isGndPin, nearestHole as nearestArduinoHole, railVolts, setActiveBoard, setBoardOffset } from '@kodyuno/lib/boardGeometry'
@@ -21,10 +22,11 @@ import { ledAppearance, multimeterReadings } from '@kodyuno/lib/dcSolver'
 import { boardLedOn } from '@kodyuno/lib/boardLed'
 import { snapPoint } from '@kodyuno/lib/wireGeometry'
 import type { BoardComponent, NodeRef, Wire } from '@kodyuno/types'
-import { createBoard, createBreadboard, type BoardObject } from './boardModels'
+import { createBoard, createBreadboard, onTextureReady, setMaxAnisotropy, type BoardObject } from './boardModels'
 import { createPart, type PartObject, type PartPick } from './partModels'
 import { createNodeMarker, createWire, wirePath, type WireEnd, type WireObject } from './wireModels'
 import { HEIGHT, K, boardPcbTop, mm, toCanvas } from './units'
+import { renderSettings, setTextureQuality, type Quality } from './quality'
 
 // ------------------------------------------------------------ node universe
 
@@ -36,7 +38,7 @@ interface Node {
   label: string
 }
 
-const SNAP = 9 // canvas units: how close a click must be to a hole / terminal
+const BASE_SNAP = 9 // canvas units: how close a click must be to a hole / terminal (fingers get 1.6×)
 
 function partLabel(comp: BoardComponent, role: string) {
   return `${comp.label} · ${role}`
@@ -128,48 +130,78 @@ function headerTop() {
 /** Where wires plug into a header pin (inside the socket, or on the male pin tip). */
 function pinAnchor() {
   const female = FEMALE_BOARDS.has(useKodyUnoStore.getState().boardType)
-  return boardPcbTop() + (female ? HEIGHT.femaleHeader - 1.6 : HEIGHT.malePin - 0.4)
+  return boardPcbTop() + (female ? HEIGHT.femaleHeader : 2.5)
 }
 
 // ------------------------------------------------------------ cutting mat
 
 function matTexture(): CanvasTexture {
+  // One tile = 50 mm: five 10 mm cells, major line on the tile edge.
+  const size = 1024
   const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = 512
+  canvas.width = canvas.height = size
   const ctx = canvas.getContext('2d')!
-  ctx.fillStyle = '#163f35'
-  ctx.fillRect(0, 0, 512, 512)
-  ctx.strokeStyle = 'rgba(214,240,226,.08)'
-  ctx.lineWidth = 1
-  for (let i = 0; i <= 10; i++) {
-    const p = i * 51.2
-    ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, 512); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(512, p); ctx.stroke()
+  ctx.fillStyle = '#14392f'
+  ctx.fillRect(0, 0, size, size)
+  const noise = ctx.getImageData(0, 0, size, size)
+  for (let i = 0; i < noise.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 10
+    noise.data[i] += n; noise.data[i + 1] += n; noise.data[i + 2] += n
   }
-  ctx.strokeStyle = 'rgba(214,240,226,.16)'
+  ctx.putImageData(noise, 0, 0)
+  ctx.strokeStyle = 'rgba(200,232,214,.10)'
   ctx.lineWidth = 2
-  ctx.strokeRect(1, 1, 510, 510)
+  for (let i = 1; i < 5; i++) {
+    const p = (i * size) / 5
+    ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, size); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(size, p); ctx.stroke()
+  }
+  ctx.strokeStyle = 'rgba(200,232,214,.22)'
+  ctx.lineWidth = 3
+  ctx.strokeRect(0, 0, size, size)
   const texture = new CanvasTexture(canvas)
   texture.wrapS = texture.wrapT = RepeatWrapping
   texture.colorSpace = SRGBColorSpace
-  texture.anisotropy = 8
+  texture.anisotropy = 16
+  return texture
+}
+
+function backdrop(): CanvasTexture {
+  const canvas = document.createElement('canvas')
+  canvas.width = 16
+  canvas.height = 512
+  const ctx = canvas.getContext('2d')!
+  const g = ctx.createLinearGradient(0, 0, 0, 512)
+  g.addColorStop(0, '#1e293b')
+  g.addColorStop(1, '#0b1220')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, 16, 512)
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
   return texture
 }
 
 // ------------------------------------------------------------ component
 
-export interface Scene3DHandle { resetView(): void; topView(): void }
+export interface Scene3DHandle {
+  resetView(): void
+  topView(): void
+  pan(right: number, forward: number): void
+  zoom(factor: number): void
+  turn(angle: number): void
+}
 
 interface Props {
-  bloom: boolean
+  quality: Quality
   onReady?: (handle: Scene3DHandle) => void
 }
 
 interface Hover { text: string; x: number; y: number }
 
-export function Scene3D({ bloom, onReady }: Props) {
+export function Scene3D({ quality, onReady }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
-  const bloomRef = useRef(bloom)
+  const qualityRef = useRef(quality)
+  setTextureQuality(quality)
   const [hover, setHover] = useState<Hover | null>(null)
   const [wiringActive, setWiringActive] = useState(false)
   const [selectedWire, setSelectedWire] = useState<string | null>(null)
@@ -178,24 +210,24 @@ export function Scene3D({ bloom, onReady }: Props) {
   const circuitFaults = useKodyUnoStore(s => s.circuitFaults)
   const updateWire = useKodyUnoStore(s => s.updateWire)
   const removeWire = useKodyUnoStore(s => s.removeWire)
-  useEffect(() => { bloomRef.current = bloom }, [bloom])
+  useEffect(() => { qualityRef.current = quality }, [quality])
   useEffect(() => { selectedWireRef.current = selectedWire }, [selectedWire])
   const cancelWiringRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     const host = hostRef.current!
     const renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.outputColorSpace = SRGBColorSpace
     renderer.toneMapping = ACESFilmicToneMapping
     renderer.toneMappingExposure = 0.95
     renderer.shadowMap.enabled = true
     renderer.shadowMap.type = PCFShadowMap
     renderer.domElement.className = 'block h-full w-full touch-none'
+    setMaxAnisotropy(renderer.capabilities.getMaxAnisotropy())
     host.append(renderer.domElement)
 
     const scene = new Scene()
-    scene.background = new Color('#0f172a')
+    scene.background = backdrop()
     const pmrem = new PMREMGenerator(renderer)
     scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
     scene.environmentIntensity = 0.4
@@ -208,11 +240,16 @@ export function Scene3D({ bloom, onReady }: Props) {
     controls.minDistance = 25
     controls.maxDistance = 900
     controls.screenSpacePanning = false
+    controls.zoomToCursor = true
+    controls.panSpeed = 1.1
+    controls.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.ROTATE }
+    controls.touches = { ONE: TOUCH.PAN, TWO: TOUCH.DOLLY_ROTATE }
 
     scene.add(new HemisphereLight('#e0f2fe', '#1e293b', 0.4), new AmbientLight('#ffffff', 0.15))
     const sun = new DirectionalLight('#fff7ed', 1.5)
     sun.castShadow = true
-    sun.shadow.mapSize.set(2048, 2048)
+    sun.shadow.mapSize.set(4096, 4096)
+    sun.shadow.radius = 3
     sun.shadow.bias = -0.0004
     sun.shadow.normalBias = 0.4
     const shadowCam = sun.shadow.camera
@@ -220,7 +257,7 @@ export function Scene3D({ bloom, onReady }: Props) {
     scene.add(sun, sun.target)
 
     const mat = matTexture()
-    mat.repeat.set(16, 16)
+    mat.repeat.set(32, 32)
     const table = new Mesh(new PlaneGeometry(1600, 1600), new MeshStandardMaterial({ map: mat, roughness: 0.92 }))
     table.rotation.x = -Math.PI / 2
     table.receiveShadow = true
@@ -229,6 +266,10 @@ export function Scene3D({ bloom, onReady }: Props) {
 
     const composer = new EffectComposer(renderer)
     composer.addPass(new RenderPass(scene, camera))
+    const aoPass = new GTAOPass(scene, camera, 512, 512)
+    aoPass.updateGtaoMaterial({ radius: 6, distanceExponent: 1.2, thickness: 4, scale: 1 })
+    aoPass.blendIntensity = 0.85
+    composer.addPass(aoPass)
     const bloomPass = new UnrealBloomPass(new Vector2(256, 256), 0.6, 0.3, 1.6)
     composer.addPass(bloomPass)
     composer.addPass(new OutputPass())
@@ -315,7 +356,7 @@ export function Scene3D({ bloom, onReady }: Props) {
       }
       if (ref.type === 'hole') {
         const hole = breadboardHoles().find(h => h.id === ref.hole)
-        return hole ? { x: hole.x, y: hole.y, h: HEIGHT.breadboardTop - 1.4 } : null
+        return hole ? { x: hole.x, y: hole.y, h: HEIGHT.breadboardTop } : null
       }
       const entry = parts.get(ref.comp)
       const comp = entry?.comp
@@ -394,7 +435,31 @@ export function Scene3D({ bloom, onReady }: Props) {
       controls.update()
       dirty = true
     }
-    onReady?.({ resetView: () => frame(false), topView: () => frame(true) })
+    const pan = (right: number, forward: number) => {
+      const distance = camera.position.distanceTo(controls.target)
+      const step = distance * 0.12
+      const ahead = new Vector3().subVectors(controls.target, camera.position).setY(0)
+      if (ahead.lengthSq() < 1e-6) ahead.set(0, 0, -1)
+      ahead.normalize()
+      const side = new Vector3(-ahead.z, 0, ahead.x)
+      const move = side.multiplyScalar(right * step).add(ahead.multiplyScalar(forward * step))
+      controls.target.add(move)
+      camera.position.add(move)
+      dirty = true
+    }
+    const zoom = (factor: number) => {
+      const offset = new Vector3().subVectors(camera.position, controls.target)
+      const length = Math.min(controls.maxDistance, Math.max(controls.minDistance, offset.length() * factor))
+      camera.position.copy(controls.target).add(offset.setLength(length))
+      dirty = true
+    }
+    const turn = (angle: number) => {
+      const offset = new Vector3().subVectors(camera.position, controls.target)
+      offset.applyAxisAngle(new Vector3(0, 1, 0), angle)
+      camera.position.copy(controls.target).add(offset)
+      dirty = true
+    }
+    onReady?.({ resetView: () => frame(false), topView: () => frame(true), pan, zoom, turn })
     if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__kodyuno3d = { camera, renderer, toScreen: (x: number, y: number, h: number) => { const v = new Vector3(mm(x), h, mm(y)).project(camera); const r = renderer.domElement.getBoundingClientRect(); return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height } } }
 
     // ---------------------------------------------------------- picking
@@ -416,9 +481,11 @@ export function Scene3D({ bloom, onReady }: Props) {
     }
 
     /** Node a hit refers to: only holes/terminals on the surface that was hit. */
+    let touchScale = 1
     const nodeAt = (hit: Intersection<Object3D>, exclude?: string): Node | undefined => {
       const pick = hit.object.userData.pick as { kind: string; id?: string }
       const p = toCanvas(hit.point)
+      const SNAP = BASE_SNAP * touchScale
       if (pick.kind === 'part') return nearest(nodes, p.x, p.y, SNAP * 0.75, n => n.ref.type === 'term' && n.ref.comp === pick.id, exclude)
       if (pick.kind === 'breadboard') return nearest(nodes, p.x, p.y, SNAP, n => n.ref.type !== 'pin', exclude)
       if (pick.kind === 'board') return nearest(nodes, p.x, p.y, SNAP, n => n.ref.type === 'pin', exclude)
@@ -487,6 +554,7 @@ export function Scene3D({ bloom, onReady }: Props) {
 
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return
+      touchScale = event.pointerType === 'touch' ? 1.6 : 1
       down = { x: event.clientX, y: event.clientY }
       const hit = cast(event)
       const store = useKodyUnoStore.getState()
@@ -654,6 +722,7 @@ export function Scene3D({ bloom, onReady }: Props) {
       renderer.setSize(w, h, false)
       composer.setSize(w, h)
       bloomPass.resolution.set(w / 2, h / 2)
+      aoPass.setSize(w, h)
       camera.aspect = w / h
       camera.updateProjectionMatrix()
       dirty = true
@@ -664,38 +733,58 @@ export function Scene3D({ bloom, onReady }: Props) {
     syncAll()
     frame(false)
 
+    let settings = renderSettings(qualityRef.current)
+    let applied: Quality | null = null
+    const applyQuality = (next: Quality) => {
+      applied = next
+      settings = renderSettings(next)
+      renderer.setPixelRatio(settings.pixelRatio)
+      composer.setPixelRatio(settings.pixelRatio)
+      if (sun.shadow.mapSize.x !== settings.shadowMap) {
+        sun.shadow.mapSize.set(settings.shadowMap, settings.shadowMap)
+        sun.shadow.map?.dispose()
+        sun.shadow.map = null
+      }
+      aoPass.enabled = settings.postprocess
+      resize()
+    }
+    applyQuality(qualityRef.current)
+    const stopTextures = onTextureReady(markDirty)
+
     let raf = 0
     let lastSync = 0
-    let lastBloom = bloomRef.current
+    let glowing = false
     const loop = (time: number) => {
       raf = requestAnimationFrame(loop)
-      // Running sketches change state thousands of times a second; one scene
-      // sync per frame (capped ~40 Hz) is all the eye can see.
-      if (pendingSync && time - lastSync > 24) {
+      if (applied !== qualityRef.current) applyQuality(qualityRef.current)
+      // Running sketches change state thousands of times a second; a few
+      // dozen scene syncs per second is all the eye can see.
+      if (pendingSync && time - lastSync > settings.syncInterval) {
         pendingSync = false
         lastSync = time
         syncAll()
       }
       if (controls.update()) dirty = true
       const running = useKodyUnoStore.getState().runState === 'running'
-      if (hot.size && running) {
+      const live = hot.size > 0 && running
+      if (live && settings.animateWires) {
         for (const [id, entry] of wireObjects) entry.object.setHot(hot.has(id), time / 1000)
         dirty = true
-      } else for (const entry of wireObjects.values()) entry.object.setHot(false, 0)
-      if (lastBloom !== bloomRef.current) { lastBloom = bloomRef.current; dirty = true }
-      // async textures land between frames
-      if (!dirty && !running) return
+      } else if (live !== glowing || live) {
+        // steady glow, painted only when the set of live wires changes
+        for (const [id, entry] of wireObjects) entry.object.setHot(live && hot.has(id), 0)
+      }
+      glowing = live
+      if (!dirty) return
       dirty = false
-      if (bloomRef.current) composer.render()
+      if (settings.postprocess) composer.render()
       else renderer.render(scene, camera)
     }
     raf = requestAnimationFrame(loop)
-    // textures decode asynchronously — repaint shortly after they arrive
-    const textureTick = window.setInterval(() => { dirty = true }, 250)
 
     return () => {
       cancelAnimationFrame(raf)
-      window.clearInterval(textureTick)
+      stopTextures()
       unsubscribe()
       observer.disconnect()
       window.removeEventListener('keydown', onKey)

@@ -2,18 +2,32 @@ import {
   BoxGeometry, CanvasTexture, Group, InstancedMesh, Matrix4, Mesh, MeshStandardMaterial, SRGBColorSpace,
   type Material, type Texture,
 } from 'three'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { BB_BODY, BB_COLS, BB_HOLES, BB_PITCH, BB_ROW_Y, BB_X0 } from '@kodyuno/lib/breadboard'
 import { BOARD_X, BOARD_Y, boardSize, type BoardDef } from '@kodyuno/lib/boards'
 import { holesOf } from '@kodyuno/lib/boardGeometry'
 import { HEIGHT, mm } from './units'
 import { boardArtwork } from './textures'
+import { textureScaleFor } from './quality'
 
 export interface Pickable { kind: 'board' | 'breadboard' }
+
+let maxAnisotropy = 8
+/** Renderer limit, set once the WebGL context exists. */
+export function setMaxAnisotropy(value: number) { maxAnisotropy = Math.max(1, value) }
+
+const textureListeners = new Set<() => void>()
+/** Called whenever an async artwork texture lands, so on-demand renderers repaint. */
+export function onTextureReady(listener: () => void): () => void {
+  textureListeners.add(listener)
+  return () => { textureListeners.delete(listener) }
+}
 
 function canvasTexture(canvas: HTMLCanvasElement): Texture {
   const texture = new CanvasTexture(canvas)
   texture.colorSpace = SRGBColorSpace
-  texture.anisotropy = 8
+  texture.anisotropy = maxAnisotropy
+  queueMicrotask(() => { for (const listener of textureListeners) listener() })
   return texture
 }
 
@@ -33,7 +47,7 @@ function disposeGroup(group: Group) {
 // ---------------------------------------------------------------- breadboard
 
 function breadboardTop(): HTMLCanvasElement {
-  const s = 6 // px per canvas unit
+  const s = textureScaleFor() >= 8 ? 11 : 6 // px per canvas unit (≈ 3870 px wide in HD)
   const canvas = document.createElement('canvas')
   canvas.width = Math.round(BB_BODY.w * s)
   canvas.height = Math.round(BB_BODY.h * s)
@@ -75,7 +89,7 @@ export function createBreadboard(): Group {
   const w = mm(BB_BODY.w), d = mm(BB_BODY.h), h = HEIGHT.breadboardTop
   const side = new MeshStandardMaterial({ color: '#ebe5d6', roughness: 0.7 })
   const top = new MeshStandardMaterial({ map: canvasTexture(breadboardTop()), roughness: 0.65 })
-  const body = new Mesh(new BoxGeometry(w, h, d), [side, side, top, side, side, side])
+  const body = new Mesh(new RoundedBoxGeometry(w, h, d, 3, 1.2), [side, side, top, side, side, side])
   body.position.set(mm(BB_BODY.x) + w / 2, h / 2, mm(BB_BODY.y) + d / 2)
   body.castShadow = true
   body.receiveShadow = true
@@ -104,7 +118,7 @@ export function createBoard(board: BoardDef): BoardObject {
   const edge = new MeshStandardMaterial({ color: pcbColor, roughness: 0.55 })
   const top = new MeshStandardMaterial({ color: '#ffffff', roughness: 0.5, metalness: 0.05, transparent: true, alphaTest: 0.02 })
   const bottom = new MeshStandardMaterial({ color: pcbColor, roughness: 0.8 })
-  const pcb = new Mesh(new BoxGeometry(w, HEIGHT.pcb, d), [edge, edge, top, bottom, edge, edge])
+  const pcb = new Mesh(new RoundedBoxGeometry(w, HEIGHT.pcb, d, 2, 0.5), [edge, edge, top, bottom, edge, edge])
   pcb.position.set(mm(BOARD_X) + w / 2, HEIGHT.boardStandoff + HEIGHT.pcb / 2, mm(BOARD_Y) + d / 2)
   pcb.castShadow = true
   pcb.receiveShadow = true

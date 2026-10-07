@@ -120,7 +120,7 @@ export function ComponentInspector() {
   const hasControls = ranges.length > 0 || toggles.length > 0 || component.type === 'rfid' || component.type === 'microsd' || component.type === 'logic_analyzer' || component.type === 'multimeter' || component.type === 'ir_receiver' || component.type === 'keypad' || component.type === 'led_matrix' || component.type === 'dip_switch'
 
   return (
-    <aside className="absolute left-3 bottom-3 z-20 w-64 max-h-[55%] overflow-y-auto rounded-xl border border-slate-200 bg-white/95 backdrop-blur shadow-xl">
+    <aside className="absolute right-3 top-3 z-20 w-72 max-h-[70%] overflow-y-auto rounded-xl border border-slate-200 bg-white/95 backdrop-blur shadow-xl">
       <header className="sticky top-0 z-10 flex items-start gap-2 px-3 py-2 border-b border-slate-100 bg-white/95">
         <span className="text-xl" aria-hidden>{catalog?.emoji ?? '🔧'}</span>
         <div className="min-w-0 flex-1"><p className="text-xs font-bold text-slate-800 truncate">{component.label}</p><p className="text-[9px] text-slate-400">{catalog?.description}</p></div>
